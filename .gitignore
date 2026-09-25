@@ -8,11 +8,11 @@ wheels/
 *.egg-info/
 
 # Virtual environments and secrets
-.venv/
-venv/
-.env
-.env.local
-.env.*.local
+# .venv/
+# venv/
+# .env
+# .env.local
+# .env.*.local
 
 # LangGraph runtime
 .langgraph_api/
