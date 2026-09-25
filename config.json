@@ -11,7 +11,14 @@
         "insertion": 3
      },
     "model_select": {
-        "mode": "all_claude",
+        "mode": "ollama",
+        "ollama": {
+            "planning": "ollama",
+            "db": "ollama",
+            "web": "ollama",
+            "insertion": "ollama",
+            "alerts": "ollama"
+        },
         "all_claude": {
             "planning": "sonnet-4-6",
             "db": "sonnet-4-6",

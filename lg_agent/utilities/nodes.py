@@ -77,37 +77,125 @@ async def s_planner_node(state: SPlannerState, config: RunnableConfig) -> SPlann
     c_level = CONTEXT_CONFIG["s-planner"]["context-select"]
     system_prompt = CONTEXT_CONFIG["s-planner"]["context-level"][c_level]
 
-    messages = []
-    messages.extend(state["messages"])
+    planner_rules = """
+    You have access to the authenticated student's academic records.
 
-    if len(messages) == 1:
-        messages.append(SystemMessage(content=system_prompt + ("Loop limit = " + str(LOOP_CONFIG["s-planner"]) if CONTEXT_CONFIG["s-planner"] != "no-tools" else "")))
+    For questions about the student's major, program, GPA, credits, advisor,
+    graduation, interests, tracked sections, or course history, request database
+    information before answering.
+
+    For "What is my major?", set requires_database to true and set
+    info_needed_db to: "Call student_basic_info for the current authenticated
+    student and return ProgramsOfStudy." The current student ID is already
+    available in the agent state. Do not request the student ID.
+
+    Never insert a student ID, major, program, GPA, credits, advisor, or other
+    existing academic record. Database insertion is only for new interests or
+    goals explicitly stated by the student.
+
+    Do not claim that academic records are unavailable when a student ID is
+    present.
+
+    Questions such as "What is my major?" and "What courses have I taken?" are
+    read-only questions and must never request insertion.
+    """
+
+    messages = [
+        SystemMessage(
+            content=(
+                system_prompt
+                + "\n"
+                + planner_rules
+                + "\nLoop limit = "
+                + str(LOOP_CONFIG["s-planner"])
+            )
+        )
+    ]
+
+    messages.extend(state["messages"])
 
     if "db_info" not in state:
         state["db_info"] = []
     else:
-        for QueryResult in state["db_info"]:
-            messages.append(HumanMessage(content=f"Database Query: {QueryResult['query']}\nDatabase Result: {QueryResult['result']}"))
+        for query_result in state["db_info"]:
+            messages.append(
+                HumanMessage(
+                    content=(
+                        f"Database Query: {query_result['query']}\n"
+                        f"Database Result: {query_result['result']}"
+                    )
+                )
+            )
+
     if "web_info" not in state:
         state["web_info"] = []
     else:
-        for QueryResult in state["web_info"]:
-            messages.append(HumanMessage(content=f"Web Search Query: {QueryResult['query']}\nWeb Search Result: {QueryResult['result']}"))
+        for query_result in state["web_info"]:
+            messages.append(
+                HumanMessage(
+                    content=(
+                        f"Web Search Query: {query_result['query']}\n"
+                        f"Web Search Result: {query_result['result']}"
+                    )
+                )
+            )
 
-    if "insertion_result" in state:
-        if state["insertion_result"] != "":
-            messages.append(HumanMessage(content=f"Result of last insertion attempt: {state['insertion_result']}"))
+    if state.get("insertion_result"):
+        messages.append(
+            HumanMessage(
+                content=(
+                    "Result of last insertion attempt: "
+                    + state["insertion_result"]
+                )
+            )
+        )
 
-    if CONTEXT_CONFIG["s-planner"] != "no-tools":
-        messages.append(HumanMessage(content="Current loop count = " + str(state["loop_count"])))
+    if c_level != "no-tools":
+        messages.append(
+            HumanMessage(
+                content="Current loop count = " + str(state["loop_count"])
+            )
+        )
 
     modified_config = copilotkit_customize_config(
         config,
         emit_messages=False,
-        emit_tool_calls=False 
+        emit_tool_calls=False,
     )
 
-    response = (await structured_llm.ainvoke(messages, config=modified_config)).model_dump()
+    response = (
+        await structured_llm.ainvoke(
+            messages,
+            config=modified_config,
+        )
+    ).model_dump()
+
+    response = (
+        await structured_llm.ainvoke(
+            messages,
+            config=modified_config,
+        )
+    ).model_dump()
+
+
+    # Correct inconsistent structured output from the model. 
+    db_request = (response.get("info_needed_db") or "").strip()
+    web_request = (response.get("info_needed_web") or "").strip()
+    insertion_request = (response.get("info_to_insert") or "").strip()
+
+    if db_request:
+        response["requires_database"] = True
+        response["answer"] = ""
+
+    if web_request:
+        response["requires_web_search"] = True
+        response["answer"] = ""
+
+    if insertion_request:
+        response["requires_insertion"] = True
+
+    print("STUDENT PLAN:", response, flush=True)
+
     state["plan"] = response
     return state
 
@@ -166,6 +254,14 @@ async def a_planner_node(state: APlannerState, config: RunnableConfig) -> APlann
     )
 
     response = (await structured_llm.ainvoke(messages, config=modified_config)).model_dump()
+
+    # Temporary safety guard: disable database insertion.
+    # Read-only questions should never enter the insertion graph.
+    response["requires_insertion"] = False
+    response["info_to_insert"] = ""
+
+    print("STUDENT PLAN:", response, flush=True)
+
     state["plan"] = response
     return state
 

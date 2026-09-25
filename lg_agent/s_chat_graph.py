@@ -223,7 +223,8 @@ def answer_node(state: SPlannerState) -> SPlannerState:
     answer = _plan_value(state, "answer")
     if answer is None or answer == "":
         answer = "I couldn't produce a final answer for that request. Please rephrase your question and try again."
-    return {"messages": state["messages"] + [AIMessage(content=answer)]}
+    # return {"messages": state["messages"] + [AIMessage(content=answer)]}
+    return {"messages": [AIMessage(content=answer)]}
 
 graph_builder = StateGraph(SPlannerState)
 

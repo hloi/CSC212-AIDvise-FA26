@@ -45,6 +45,7 @@ if ROOT_DIR not in sys.path:
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, ToolCall
+from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langchain_openrouter import ChatOpenRouter
 from utilities.TestModel import FakeChatModel
@@ -1406,6 +1407,13 @@ def _create_model(model_name: str, node_name: str):
                 return ChatOpenRouter(model="openrouter/free", temperature=0.2)
             else:
                 raise ValueError("OPENROUTER_API_KEY not found in environment variables.")
+        case "ollama" | "qwen3_14b":
+            base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+            return ChatOllama(
+                model="qwen3:14b",
+                base_url=base_url,
+                temperature=0.2,
+            )
         case "s_tool_test":
             match node_name:
                 case "planning":

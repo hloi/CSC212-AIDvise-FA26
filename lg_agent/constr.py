@@ -32,6 +32,7 @@ from a_chat_graph import a_chat_graph
 from data_pipeline.database.database_dev_tools import __connect, aconnect
 from typing import Literal
 
+
 # cd my-agent && .venv\Scripts\activate && npx @langchain/langgraph-cli dev --port 8123 --no-browser
 load_dotenv()
 
@@ -79,6 +80,7 @@ async def invoke_s_graph(state: RouteState) -> RouteState:
         ValueError: If no student row exists for the provided parent user ID.
     """
     async with aconnect() as conn:
+        print("CHAT AGENT RECEIVED STATE:", state, flush=True)
         cur = await conn.execute("SELECT ID FROM students WHERE ParentID = ?", (state["user_id"],))
         student_id = await cur.fetchone()
         if student_id is None:

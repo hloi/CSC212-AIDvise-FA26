@@ -10,6 +10,7 @@ GitHub:   https://github.com/LSilver17/CSC212---AI-Agent
 import "@copilotkit/react-ui/styles.css";
 import { CopilotChat } from "@copilotkit/react-ui";
 import { Flex } from "@radix-ui/themes";
+import { useEffect } from "react";
 
 // Lib
 import { useUserData } from "@/app/lib/account/user_context";
@@ -49,13 +50,45 @@ export default function Chat() {
 
   const accountType: AccountType = userMetadata?.AccountType;
 
-  const {state, setState} = useCoAgent({
-    name: "default",
-    initialState: {
-      "user_id": userMetadata.AccountID,
-      "account_type": accountType,
-    }
-  })
+  const { state, setState } = useCoAgent({
+  name: "default",
+  initialState: {
+    user_id: userMetadata?.AccountID ?? null,
+    account_type: accountType ?? null,
+  },
+});
+
+useEffect(() => {
+  const userId = userMetadata?.AccountID;
+
+  if (!userId || !accountType) {
+    return;
+  }
+
+  if (
+    state?.user_id === userId &&
+    state?.account_type === accountType
+  ) {
+    return;
+  }
+
+  console.log("Updating AIDvise agent identity:", {
+    user_id: userId,
+    account_type: accountType,
+  });
+
+  setState({
+    ...state,
+    user_id: userId,
+    account_type: accountType,
+  });
+}, [
+  userMetadata?.AccountID,
+  accountType,
+  state?.user_id,
+  state?.account_type,
+  setState,
+]);
 
   // Set name and message
   var name: string = "User";

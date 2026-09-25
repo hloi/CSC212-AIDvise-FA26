@@ -47,3 +47,5 @@ mock/
 # prisma
 src/
 prisma.config.ts
+# LangGraph API
+.langgraph_api
