@@ -1409,10 +1409,15 @@ def _create_model(model_name: str, node_name: str):
                 raise ValueError("OPENROUTER_API_KEY not found in environment variables.")
         case "ollama" | "qwen3_14b":
             base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+            model_options = {
+                "model": "qwen3:14b",
+                "base_url": base_url,
+                "temperature": 0.2,
+            }
+            if node_name == "planning":
+                model_options.update(reasoning=False, num_predict=256)
             return ChatOllama(
-                model="qwen3:14b",
-                base_url=base_url,
-                temperature=0.2,
+                **model_options,
             )
         case "s_tool_test":
             match node_name:

@@ -16,7 +16,7 @@ These nodes are integrated into LangGraph agents to provide multi-turn planning 
 System prompts and loop limits for each node are defined in config.json and can be adjusted to control agent behavior and prevent infinite loops.
 """
 
-import sys, os
+import sys, os, time
     
 # adds utilities directory to system path if not already there
 PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -37,6 +37,8 @@ from utilities.schemas import APlanSchema, SPlanSchema
 from utilities.tools import db_tools, web_tools, insertion_tools, alt_db_tools
 from utilities.model_inits import db_llm, planning_llm, web_llm, insertion_llm
 from utilities.TestModel import FakeChatModel
+from lg_agent.database_utils import async_get_student_basic_info
+from data_pipeline.database.database_dev_tools import aconnect
 import json
 
 load_dotenv()
@@ -47,6 +49,68 @@ with open(CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
     CONTEXT_CONFIG = CONFIG["context_config"]
     LOOP_CONFIG = CONFIG["loop_limits"]
+
+def _latest_user_text(messages) -> str:
+    latest_user_text = next(
+        (
+            message.content.lower()
+            for message in reversed(messages)
+            if isinstance(message, HumanMessage) and isinstance(message.content, str)
+        ),
+        "",
+    )
+
+    return latest_user_text
+
+def _needs_student_major_lookup(messages) -> bool:
+    latest_user_text = _latest_user_text(messages)
+    return any(
+        phrase in latest_user_text
+        for phrase in (
+            "my major",
+            "my program",
+            "program of study",
+            "what major am i",
+            "which major am i",
+            "what program am i",
+            "which program am i",
+        )
+    )
+
+def _needs_student_course_history_lookup(messages) -> bool:
+    latest_user_text = _latest_user_text(messages)
+    return any(
+        phrase in latest_user_text
+        for phrase in (
+            "course history",
+            "my transcript",
+            "courses have i taken",
+            "course have i taken",
+            "classes have i taken",
+            "class have i taken",
+            "courses i've taken",
+            "courses i have taken",
+            "classes i've taken",
+            "classes i have taken",
+            "courses did i take",
+            "classes did i take",
+            "courses have i completed",
+            "classes have i completed",
+        )
+    )
+
+def _normalize_flag(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+def _normalize_request(value) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    request = str(value).strip()
+    if request.lower() in {"false", "none", "null", "no", "n/a"}:
+        return ""
+    return request
 
 async def s_planner_node(state: SPlannerState, config: RunnableConfig) -> SPlannerState:
     """
@@ -72,32 +136,62 @@ async def s_planner_node(state: SPlannerState, config: RunnableConfig) -> SPlann
     state["loop_count"] += 1
     state["plan"] = None
 
+    if (
+        CONTEXT_CONFIG["s-planner"]["context-select"] == "full"
+        and not _needs_student_course_history_lookup(state["messages"])
+        and _needs_student_major_lookup(state["messages"])
+    ):
+        async with aconnect() as conn:
+            student_info = await async_get_student_basic_info(conn, state["user_id"])
+        programs = student_info.get("ProgramsOfStudy", [])
+        program_titles = [
+            program["Title"]
+            for program in programs
+            if isinstance(program, dict) and program.get("Title")
+        ]
+        if program_titles:
+            if len(program_titles) == 1:
+                answer = (
+                    f"Your program of study is '{program_titles[0]}'. "
+                    "Your profile does not list a separate declared major."
+                )
+            else:
+                titles = ", ".join(f"'{title}'" for title in program_titles)
+                answer = (
+                    f"Your programs of study are {titles}. "
+                    "Your profile does not list a separate declared major."
+                )
+        else:
+            answer = "Your profile does not list a program of study or a declared major."
+        state["plan"] = {
+            "requires_database": False,
+            "requires_web_search": False,
+            "requires_insertion": False,
+            "answer": answer,
+            "info_needed_db": "",
+            "info_needed_web": "",
+            "info_to_insert": "",
+        }
+        print("STUDENT PLAN:", state["plan"], flush=True)
+        return state
+
     structured_llm = planning_llm.with_structured_output(SPlanSchema)
 
     c_level = CONTEXT_CONFIG["s-planner"]["context-select"]
     system_prompt = CONTEXT_CONFIG["s-planner"]["context-level"][c_level]
 
     planner_rules = """
-    You have access to the authenticated student's academic records.
+    Use the authenticated student's records for questions about their
+    program, courses, grades, credits, advisor, or other academic information.
 
-    For questions about the student's major, program, GPA, credits, advisor,
-    graduation, interests, tracked sections, or course history, request database
-    information before answering.
+    Before requesting a database lookup, review the Database Results already
+    provided in this planning run. Request only information that is still
+    missing. If a result answers the question, provide a final answer and set
+    all requires_* fields to false. Do not repeat the same database request.
 
-    For "What is my major?", set requires_database to true and set
-    info_needed_db to: "Call student_basic_info for the current authenticated
-    student and return ProgramsOfStudy." The current student ID is already
-    available in the agent state. Do not request the student ID.
-
-    Never insert a student ID, major, program, GPA, credits, advisor, or other
-    existing academic record. Database insertion is only for new interests or
-    goals explicitly stated by the student.
-
-    Do not claim that academic records are unavailable when a student ID is
-    present.
-
-    Questions such as "What is my major?" and "What courses have I taken?" are
-    read-only questions and must never request insertion.
+    Treat questions about existing records as read-only. Request an insertion
+    only when the student explicitly asks to save or change their own
+    permitted profile information. Never infer an update from a question.
     """
 
     messages = [
@@ -163,25 +257,37 @@ async def s_planner_node(state: SPlannerState, config: RunnableConfig) -> SPlann
         emit_tool_calls=False,
     )
 
-    response = (
-        await structured_llm.ainvoke(
+    planner_started_at = time.perf_counter()
+    print("STUDENT PLANNER LLM CALL START", flush=True)
+    try:
+        planner_result = await structured_llm.ainvoke(
             messages,
             config=modified_config,
         )
-    ).model_dump()
-
-    response = (
-        await structured_llm.ainvoke(
-            messages,
-            config=modified_config,
+    except Exception:
+        elapsed = time.perf_counter() - planner_started_at
+        print(
+            f"STUDENT PLANNER LLM CALL FAILED after {elapsed:.2f}s",
+            flush=True,
         )
-    ).model_dump()
-
+        raise
+    elapsed = time.perf_counter() - planner_started_at
+    print(f"STUDENT PLANNER LLM CALL END after {elapsed:.2f}s", flush=True)
+    response = planner_result.model_dump()
 
     # Correct inconsistent structured output from the model. 
-    db_request = (response.get("info_needed_db") or "").strip()
-    web_request = (response.get("info_needed_web") or "").strip()
-    insertion_request = (response.get("info_to_insert") or "").strip()
+    db_request = _normalize_request(response.get("info_needed_db"))
+    web_request = _normalize_request(response.get("info_needed_web"))
+    insertion_request = _normalize_request(response.get("info_to_insert"))
+
+    response["requires_database"] = _normalize_flag(response.get("requires_database"))
+    response["requires_web_search"] = _normalize_flag(response.get("requires_web_search"))
+    if "requires_insertion" in response:
+        response["requires_insertion"] = _normalize_flag(response.get("requires_insertion"))
+    response["info_needed_db"] = db_request
+    response["info_needed_web"] = web_request
+    if "info_to_insert" in response:
+        response["info_to_insert"] = insertion_request
 
     if db_request:
         response["requires_database"] = True
@@ -193,6 +299,40 @@ async def s_planner_node(state: SPlannerState, config: RunnableConfig) -> SPlann
 
     if insertion_request:
         response["requires_insertion"] = True
+
+    if (
+        c_level == "full"
+        and not state.get("db_info")
+        and _needs_student_major_lookup(state["messages"])
+    ):
+        response["requires_database"] = True
+        response["requires_web_search"] = False
+        response["requires_insertion"] = False
+        response["answer"] = ""
+        response["info_needed_web"] = None
+        response["info_to_insert"] = ""
+        response["info_needed_db"] = (
+            "Look up the authenticated student's basic profile and identify "
+            "their program(s) of study and declared major."
+        )
+
+    if (
+        c_level == "full"
+        and not state.get("db_info")
+        and _needs_student_course_history_lookup(state["messages"])
+    ):
+        response["requires_database"] = True
+        response["requires_web_search"] = False
+        response["requires_insertion"] = False
+        response["answer"] = ""
+        response["info_needed_web"] = None
+        response["info_to_insert"] = ""
+        response["info_needed_db"] = (
+            "Use the student_course_history tool to retrieve the authenticated "
+            "student's completed and attempted courses, including course codes, "
+            "titles, and grades. This is a read-only lookup; do not insert or "
+            "change any student records."
+        )
 
     print("STUDENT PLAN:", response, flush=True)
 
@@ -329,7 +469,31 @@ async def db_node(state: DatabaseHelperState, config: RunnableConfig):
         emit_tool_calls=False 
     )
 
-    result = await llm_with_db_tools.ainvoke(messages, config=modified_config)
+    db_started_at = time.perf_counter()
+    print(
+        f"STUDENT DB LLM CALL START loop={state['loop_count']}",
+        flush=True,
+    )
+    try:
+        result = await llm_with_db_tools.ainvoke(messages, config=modified_config)
+    except Exception:
+        elapsed = time.perf_counter() - db_started_at
+        print(
+            f"STUDENT DB LLM CALL FAILED after {elapsed:.2f}s "
+            f"loop={state['loop_count']}",
+            flush=True,
+        )
+        raise
+    elapsed = time.perf_counter() - db_started_at
+    tool_names = [
+        tool_call.get("name", "unknown")
+        for tool_call in getattr(result, "tool_calls", [])
+    ]
+    print(
+        f"STUDENT DB LLM CALL END after {elapsed:.2f}s "
+        f"loop={state['loop_count']} tool_calls={tool_names}",
+        flush=True,
+    )
 
     return {"messages": [result]}
 

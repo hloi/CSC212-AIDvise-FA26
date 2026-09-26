@@ -21,6 +21,11 @@ import type { AccountType } from "@/app/lib/account/account_type";
 import { useCoAgent } from "@copilotkit/react-core";
 import { authSession } from "@/app/lib/account/authSession";
 
+type ChatAgentState = {
+  user_id: string | number | null;
+  account_type: AccountType | null;
+};
+
 /**
  * Customizes user welcome message based on account type and user data.
  * @param name 
@@ -50,7 +55,7 @@ export default function Chat() {
 
   const accountType: AccountType = userMetadata?.AccountType;
 
-  const { state, setState } = useCoAgent({
+  const { state, setState } = useCoAgent<ChatAgentState>({
   name: "default",
   initialState: {
     user_id: userMetadata?.AccountID ?? null,
@@ -97,11 +102,24 @@ useEffect(() => {
   const message = choose_init_message(name, accountType, userInterests);
 
   return (
-    <Flex width="100%" height="100%" direction="row">
+    <Flex
+      width="100%"
+      height="100%"
+      direction="row"
+      style={{ position: "relative" }}
+    >
       <CopilotChat
         labels={{
           title:"Advise Bot",
           initial: message,
+        }}
+        renderError={({ message: errorMessage, operation }) => (
+          <div role="alert" className="copilotKitMessage copilotKitAssistantMessage">
+            Chat request failed{operation ? ` during ${operation}` : ""}: {errorMessage}
+          </div>
+        )}
+        onError={(errorEvent) => {
+          console.error("AIDvise chat stream error:", errorEvent);
         }}
         className="w-full h-full"
       />

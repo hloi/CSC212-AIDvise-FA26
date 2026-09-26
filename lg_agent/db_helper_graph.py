@@ -67,9 +67,11 @@ def format_db_output(state: DatabaseHelperState) -> DatabaseHelperOutput:
         for message in state["messages"]:
             message_str = f"{message.role}: {message.content}\n\n"
             message_dump += message_str
-        return {"info": {"query": state["info_needed"], "result": message_dump}}
+        result = message_dump
     else:
-        return {"info": {"query": state["info_needed"], "result": state["messages"][-1].content}}
+        result = state["messages"][-1].content
+    print(f"DB HELPER COMPLETE result_chars={len(str(result))}", flush=True)
+    return {"info": {"query": state["info_needed"], "result": result}}
 
 def tool_route(state: DatabaseHelperState):
     """
@@ -91,10 +93,29 @@ def tool_route(state: DatabaseHelperState):
     last_message = messages[-1]
     if state["loop_count"] < LOOP_CONFIG["s-db"] if state["account_type"] == "Student" else LOOP_CONFIG["a-db"]:
         if getattr(last_message, "tool_calls", None):
+            tool_names = [
+                tool_call.get("name", "unknown")
+                for tool_call in last_message.tool_calls
+            ]
             if state["account_type"] == "Student":
+                print(
+                    f"DB HELPER ROUTE destination=tool_node "
+                    f"loop={state['loop_count']} tool_calls={tool_names}",
+                    flush=True,
+                )
                 return "tool_node"
             else:
+                print(
+                    f"DB HELPER ROUTE destination=alt_tool_node "
+                    f"loop={state['loop_count']} tool_calls={tool_names}",
+                    flush=True,
+                )
                 return "alt_tool_node"
+        print(
+            f"DB HELPER ROUTE destination=format_db_output "
+            f"loop={state['loop_count']}",
+            flush=True,
+        )
         return "format_db_output"
     elif state["loop_count"] == LOOP_CONFIG["s-db"] if state["account_type"] == "Student" else LOOP_CONFIG["a-db"]:
         if getattr(last_message, "tool_calls", None):

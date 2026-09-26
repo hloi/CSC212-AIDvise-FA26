@@ -26,6 +26,9 @@ if PARENT_DIR not in sys.path:
 
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from copilotkit.langgraph import copilotkit_emit_message
 from lg_agent.utilities.state import RouteState
 from s_chat_graph import s_chat_graph
 from a_chat_graph import a_chat_graph
@@ -61,7 +64,7 @@ def route(state: RouteState) -> Literal["invoke_s_graph", "invoke_a_graph"]:
         case _:
             raise ValueError(f"Invalid account type: {account_type}. Must be 'Student' or 'Advisor'.")
 
-async def invoke_s_graph(state: RouteState) -> RouteState:
+async def invoke_s_graph(state: RouteState, config: RunnableConfig) -> RouteState:
     """
     Resolves the current student ID and invokes the student chat graph.
 
@@ -85,10 +88,13 @@ async def invoke_s_graph(state: RouteState) -> RouteState:
         student_id = await cur.fetchone()
         if student_id is None:
             raise ValueError(f"No student found for parent_id {state['user_id']}")
-        result = await s_chat_graph.ainvoke({"messages": state["messages"], "plan": {}, "loop_count": 0, "user_id": student_id[0], "insertion_result": ""})
+        result = await s_chat_graph.ainvoke({"messages": state["messages"], "plan": {}, "loop_count": 0, "user_id": student_id[0], "insertion_result": ""}, config=config)
+        final_message = result["messages"][-1]
+        if isinstance(final_message, AIMessage) and isinstance(final_message.content, str):
+            await copilotkit_emit_message(config, final_message.content)
     return {"messages": result["messages"]}
 
-async def invoke_a_graph(state: RouteState) -> RouteState:
+async def invoke_a_graph(state: RouteState, config: RunnableConfig) -> RouteState:
     """
     Invokes the advisor chat graph with the current conversation state.
 
@@ -99,7 +105,10 @@ async def invoke_a_graph(state: RouteState) -> RouteState:
     Returns:
         RouteState: State update containing the messages returned by the advisor graph.
     """
-    result = await a_chat_graph.ainvoke({"messages": state["messages"], "plan": {}, "loop_count": 0, "user_id": state["user_id"]})
+    result = await a_chat_graph.ainvoke({"messages": state["messages"], "plan": {}, "loop_count": 0, "user_id": state["user_id"]}, config=config)
+    final_message = result["messages"][-1]
+    if isinstance(final_message, AIMessage) and isinstance(final_message.content, str):
+        await copilotkit_emit_message(config, final_message.content)
     return {"messages": result["messages"]}
 
 graph_builder = StateGraph(RouteState)
